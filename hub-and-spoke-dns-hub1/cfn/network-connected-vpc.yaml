@@ -1,0 +1,299 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  H&S DNS Hub Service - ConnectedTGW-VPC Resources
+Metadata:
+  Version: 1.0.0
+Parameters:
+  Cidr:
+    Type: String
+    Description: Cidr block for the VPC
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+  TransitGatewayId:
+    Type: String
+    Description: Transit Gateway ID to be attached to the VPC
+  NetworkLocalSubnet:
+    Description: Is Non-Routable Secondary CIDR required to be added to VPC
+    Default: false
+    Type: String
+    AllowedValues:
+      - true
+      - false
+  P1VPCPeeringId:
+    Description: VPC Peering connection id to P1 accounts
+    Type: String
+Conditions:
+  IsNetworkLocalSubnetRequired: !Equals 
+    - !Ref NetworkLocalSubnet
+    - true
+  # Peering condition is required if template needs to be deployed to a new region before the peering create
+  ArePeeringRoutesRequired: !Not
+    - !Equals 
+      - !Ref P1VPCPeeringId
+      - ''
+Mappings:
+  # N.Virginia is pointing to WU2-P1 VPC CIDR range and Singapore to WE1-P1 VPC CIDR range
+  VPCCidrMap:
+    us-east-1:
+      P1VPCCIDR: 10.177.208.0/20
+    us-east-2:
+      P1VPCCIDR: 10.177.208.0/20
+    eu-west-1:
+      P1VPCCIDR: 10.163.208.0/20
+    ap-southeast-1:
+      P1VPCCIDR: 10.163.208.0/20
+    ap-southeast-2:
+      P1VPCCIDR: 10.163.208.0/20
+Resources:
+  ConnectedTgwVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Ref Cidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  SecondaryCidrBlock:
+    Type: 'AWS::EC2::VPCCidrBlock'
+    Condition: IsNetworkLocalSubnetRequired
+    Properties:
+      VpcId: !Ref ConnectedTgwVPC
+      CidrBlock: 100.64.0.0/16
+  LocalSubnetA:
+    Type: 'AWS::EC2::Subnet'
+    Condition: IsNetworkLocalSubnetRequired
+    DependsOn: SecondaryCidrBlock
+    Properties:
+      AvailabilityZone: !Sub '${AWS::Region}a'
+      CidrBlock: 100.64.0.0/19
+      VpcId: !Ref ConnectedTgwVPC
+      Tags:
+        - Key: Name
+          Value: !Sub 'local-subnet-${AWS::Region}a'
+  LocalSubnetB:
+    Type: 'AWS::EC2::Subnet'
+    Condition: IsNetworkLocalSubnetRequired
+    DependsOn: SecondaryCidrBlock
+    Properties:
+      AvailabilityZone: !Sub '${AWS::Region}b'
+      CidrBlock: 100.64.32.0/19
+      VpcId: !Ref ConnectedTgwVPC
+      Tags:
+        - Key: Name
+          Value: !Sub 'local-subnet-${AWS::Region}b'
+  LocalSubnetC:
+    Type: 'AWS::EC2::Subnet'
+    Condition: IsNetworkLocalSubnetRequired
+    DependsOn: SecondaryCidrBlock
+    Properties:
+      AvailabilityZone: !Sub '${AWS::Region}c'
+      CidrBlock: 100.64.64.0/19
+      VpcId: !Ref ConnectedTgwVPC
+      Tags:
+        - Key: Name
+          Value: !Sub 'local-subnet-${AWS::Region}c'
+  LocalNACL:
+    Type: 'AWS::EC2::NetworkAcl'
+    Condition: IsNetworkLocalSubnetRequired
+    Properties:
+      VpcId: !Ref ConnectedTgwVPC
+  LocalInboundNACLALLEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Condition: IsNetworkLocalSubnetRequired
+    Properties:
+      NetworkAclId: !Ref LocalNACL
+      RuleNumber: 100
+      Protocol: -1
+      CidrBlock: 0.0.0.0/0
+      RuleAction: allow
+  LocalOutboundNACLEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Condition: IsNetworkLocalSubnetRequired
+    Properties:
+      NetworkAclId: !Ref LocalNACL
+      RuleNumber: 100
+      Protocol: -1
+      CidrBlock: 0.0.0.0/0
+      RuleAction: allow
+      Egress: true
+  LocalSubnetANaclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Condition: IsNetworkLocalSubnetRequired
+    Properties:
+      SubnetId: !Ref LocalSubnetA
+      NetworkAclId: !Ref LocalNACL
+  LocalSubnetBNaclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Condition: IsNetworkLocalSubnetRequired
+    Properties:
+      SubnetId: !Ref LocalSubnetB
+      NetworkAclId: !Ref LocalNACL
+  LocalSubnetCNaclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Condition: IsNetworkLocalSubnetRequired
+    Properties:
+      SubnetId: !Ref LocalSubnetC
+      NetworkAclId: !Ref LocalNACL
+  PrivateSubnetA:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Sub '${AWS::Region}a'
+      CidrBlock: !Select [0, !Cidr [ !Ref Cidr, 8, 5 ]]
+      VpcId: !Ref ConnectedTgwVPC
+      Tags:
+        - Key: Name
+          Value: !Sub 'private-subnet-${AWS::Region}a'
+  PrivateSubnetB:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Sub '${AWS::Region}b'
+      CidrBlock: !Select [1, !Cidr [ !Ref Cidr, 8, 5 ]]
+      VpcId: !Ref ConnectedTgwVPC
+      Tags:
+        - Key: Name
+          Value: !Sub 'private-subnet-${AWS::Region}b'
+  PrivateSubnetC:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Sub '${AWS::Region}c'
+      CidrBlock: !Select [2, !Cidr [ !Ref Cidr, 8, 5 ]]
+      VpcId: !Ref ConnectedTgwVPC
+      Tags:
+        - Key: Name
+          Value: !Sub 'private-subnet-${AWS::Region}c'
+  PrivateRoutingTableSubnetA:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref ConnectedTgwVPC
+  PrivateRoutingTableSubnetB:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref ConnectedTgwVPC
+  PrivateRoutingTableSubnetC:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref ConnectedTgwVPC
+  PrivateRouteTableAssociationA:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivateRoutingTableSubnetA
+      SubnetId: !Ref PrivateSubnetA
+  PrivateRouteTableAssociationB:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivateRoutingTableSubnetB
+      SubnetId: !Ref PrivateSubnetB
+  PrivateRouteTableAssociationC:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivateRoutingTableSubnetC
+      SubnetId: !Ref PrivateSubnetC
+  TgwConnectedAttachment:
+    Type: 'AWS::EC2::TransitGatewayAttachment'
+    Properties:
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+        - !Ref PrivateSubnetC
+      TransitGatewayId: !Ref TransitGatewayId
+      VpcId: !Ref ConnectedTgwVPC
+  DefaultRoutePrivateSubnetA:
+    Type: 'AWS::EC2::Route'
+    DependsOn: TgwConnectedAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PrivateRoutingTableSubnetA
+      TransitGatewayId: !Ref TransitGatewayId
+  DefaultRoutePrivateSubnetB:
+    Type: 'AWS::EC2::Route'
+    DependsOn: TgwConnectedAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PrivateRoutingTableSubnetB
+      TransitGatewayId: !Ref TransitGatewayId
+  DefaultRoutePrivateSubnetC:
+    Type: 'AWS::EC2::Route'
+    DependsOn: TgwConnectedAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PrivateRoutingTableSubnetC
+      TransitGatewayId: !Ref TransitGatewayId
+  PrivateNACL:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref ConnectedTgwVPC
+  PrivateInboundNACLALLEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PrivateNACL
+      RuleNumber: 100
+      Protocol: -1
+      CidrBlock: 0.0.0.0/0
+      RuleAction: allow
+  PrivateOutboundNACLPEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PrivateNACL
+      RuleNumber: 100
+      Protocol: -1
+      CidrBlock: 0.0.0.0/0
+      RuleAction: allow
+      Egress: true
+  PrivateSubnetAPrivateNACL:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      NetworkAclId: !Ref PrivateNACL
+  PrivateSubnetBPrivateNACL:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      NetworkAclId: !Ref PrivateNACL
+  PrivateSubnetCPrivateNACL:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnetC
+      NetworkAclId: !Ref PrivateNACL
+  # Routes for CD2 domain DNS servers in Prime P1
+  PeeringP1RoutePrivateSubnetA:
+    Type: 'AWS::EC2::Route'
+    Condition: ArePeeringRoutesRequired
+    Properties:
+      DestinationCidrBlock: !FindInMap [VPCCidrMap, !Ref "AWS::Region", P1VPCCIDR]
+      RouteTableId: !Ref PrivateRoutingTableSubnetA
+      VpcPeeringConnectionId: !Ref P1VPCPeeringId
+  PeeringP1RoutePrivateSubnetB:
+    Type: 'AWS::EC2::Route'
+    Condition: ArePeeringRoutesRequired
+    Properties:
+      DestinationCidrBlock: !FindInMap [VPCCidrMap, !Ref "AWS::Region", P1VPCCIDR]
+      RouteTableId: !Ref PrivateRoutingTableSubnetB
+      VpcPeeringConnectionId: !Ref P1VPCPeeringId
+  PeeringP1RoutePrivateSubnetC:
+    Type: 'AWS::EC2::Route'
+    Condition: ArePeeringRoutesRequired
+    Properties:
+      DestinationCidrBlock: !FindInMap [VPCCidrMap, !Ref "AWS::Region", P1VPCCIDR]
+      RouteTableId: !Ref PrivateRoutingTableSubnetC
+      VpcPeeringConnectionId: !Ref P1VPCPeeringId
+Outputs:
+  PrivateSubnetA:
+    Description: Private Subnet A
+    Value: !Ref PrivateSubnetA
+  PrivateSubnetB:
+    Description: Private Subnet B
+    Value: !Ref PrivateSubnetB
+  PrivateSubnetC:
+    Description: Private Subnet C
+    Value: !Ref PrivateSubnetC
+  PrivateRoutingTables:
+    Description: Private Routing Table
+    Value: !Join 
+      - ','
+      - - !Ref PrivateRoutingTableSubnetA
+        - !Ref PrivateRoutingTableSubnetB
+        - !Ref PrivateRoutingTableSubnetC
+  PrivateNACL:
+    Description: Private NACL
+    Value: !Ref PrivateNACL
+  VPC:
+    Description: VPC
+    Value: !Ref ConnectedTgwVPC

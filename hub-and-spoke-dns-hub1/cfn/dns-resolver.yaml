@@ -1,0 +1,861 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H&S DNS Service - CIP DNS Hub Resources
+
+  repository: http://git.0404.p1.we1.r53.cd2.bp.com/hub-and-spoke/dns-hub
+  design: https://basproducts.atlassian.net/wiki/spaces/CSL/pages/1721794950/AWS+Hub+and+Spoke+-+Hybrid+DNS+Design
+
+
+Parameters:
+  InboundResolverEndpointAZaIP:
+    Type: String
+    Description: Inbound Resolver Endpoint IP, Availability Zone A
+  OutboundResolverEndpointAZaIP:
+    Type: String
+    Description: Outbound Resolver Endpoint IP, Availability Zone A
+  ResolverEndpointAZaSubnet:
+    Type: String
+    Description: Resolver Endpoints Subnet, Availability Zone A
+  InboundResolverEndpointAZbIP:
+    Type: String
+    Description: Inbound Resolver Endpoint IP, Availability Zone B
+  OutboundResolverEndpointAZbIP:
+    Type: String
+    Description: Outbound Resolver Endpoint IP, Availability Zone B
+  ResolverEndpointAZbSubnet:
+    Type: String
+    Description: Resolver Endpoints Subnet, Availability Zone B
+  VpcId:
+    Type: String
+    Description: VPC ID where the Endpoints are deployed
+  OrganizationsID:
+    Type: String
+    Default: ''
+    Description: The AWS Organizations ID for the Hub Account
+  ConnectedProdOU:
+    Type: String
+    Default: ''
+    Description: The Organizational Unit ID for ConnectedProd
+  ConnectedNonProdOU:
+    Type: String
+    Default: ''
+    Description: The Organizational Unit ID for ConnectedNonProd
+  SharedServicesOU:
+    Type: String
+    Default: ''
+    Description: The Organizational Unit ID for SharedServices
+  FoundationPlatformOU:
+    Type: String
+    Default: ''
+    Description: The Organizational Unit ID for FoundationPlatform
+  ConnectedOU:
+    Type: String
+    Default: ''
+    Description: The Organizational Unit ID for Connected
+  HubAccountID:
+    Type: String
+    Default: ''
+    Description: The HUB account ID, e.g. H1/H2/H3 environments
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      IpList:
+        - Ip: "149.177.196.224"
+        - Ip: "149.177.197.225"
+        - Ip: "149.178.82.198"
+        - Ip: "149.178.82.197"
+        - Ip: "149.178.83.253"
+        - Ip: "149.178.83.252"
+    us-east-2:
+      IpList:
+        - Ip: "149.177.196.224"
+        - Ip: "149.177.197.225"
+        - Ip: "149.178.82.198"
+        - Ip: "149.178.82.197"
+        - Ip: "149.178.83.253"
+        - Ip: "149.178.83.252"
+    eu-west-1:
+      IpList:
+        - Ip: "10.56.123.4"
+        - Ip: "10.56.123.5"
+        - Ip: "10.56.123.36"
+        - Ip: "10.56.123.68"
+    ap-southeast-1:
+      IpList:
+        - Ip: "10.188.17.11"
+        - Ip: "10.188.17.25"
+        - Ip: "10.188.17.46"
+        - Ip: "10.188.17.73"
+    ap-southeast-2:
+      IpList:
+        - Ip: "10.170.2.22"
+        - Ip: "10.170.2.44"
+        - Ip: "10.170.2.84"
+        - Ip: "10.170.2.109"
+    ap-southeast-3:
+      IpList:
+        - Ip: "10.188.17.11"
+        - Ip: "10.188.17.25"
+        - Ip: "10.188.17.46"
+        - Ip: "10.188.17.73"
+
+Conditions:
+  DeployEUCd2ResolverRule: !Or [!Equals [!Ref "AWS::Region", eu-west-1], !Equals [!Ref "AWS::Region", ap-southeast-1], !Equals [!Ref "AWS::Region", ap-southeast-2], !Equals [!Ref "AWS::Region", ap-southeast-3]]
+  DeployUSCd2ResolverRule: !Or [!Equals [!Ref "AWS::Region", us-east-2], !Equals [!Ref "AWS::Region", us-east-1]]
+
+Resources:
+  OutboundEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: SG used by Route53 Outbound Resolver Endpoint - Part of H&S DNS Service
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ['${AccountName}-OutboundEndpoint', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+
+  OutboundEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Properties:
+      Direction: OUTBOUND
+      IpAddresses:
+        - Ip: !Ref OutboundResolverEndpointAZaIP
+          SubnetId: !Ref ResolverEndpointAZaSubnet
+        - Ip: !Ref OutboundResolverEndpointAZbIP
+          SubnetId: !Ref ResolverEndpointAZbSubnet
+      Name: !Sub
+        - '${AccountName}-R53-${StackMeaningfulName}'
+        - AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]
+          StackMeaningfulName: !Select [1, !Split ['-CFN-', !Ref 'AWS::StackName']]
+      SecurityGroupIds:
+        - !Ref OutboundEndpointSecurityGroup
+
+  InboundEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: SG used by Route53 Inbound Resolver Endpoint - Part of H&S DNS Service
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          SourceSecurityGroupId: !Ref OutboundEndpointSecurityGroup
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          SourceSecurityGroupId: !Ref OutboundEndpointSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 194.127.154.0/23
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 194.127.154.0/23
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.101.110.0/24
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.101.110.0/24
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.129.94.0/24
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.129.94.0/24
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.195.167.0/24
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.195.167.0/24
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 193.36.173.0/24
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 193.36.173.0/24
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 194.53.121.0/24
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 194.53.121.0/24
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 203.118.240.0/24
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 203.118.240.0/24
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 202.168.50.0/24
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 202.168.50.0/24
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.178.0.0/15
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.178.0.0/15
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.180.0.0/14
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.180.0.0/14
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.184.0.0/13
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.184.0.0/13
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.192.0.0/14
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.192.0.0/14
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.196.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.196.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/8
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/8
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 172.16.0.0/12
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 172.16.0.0/12
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 193.29.160.0/20
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 193.29.160.0/20
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 130.201.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 130.201.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 138.241.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 138.241.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.177.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 149.177.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.99.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.99.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.100.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.100.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.101.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.101.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.102.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.102.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.103.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 161.103.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 164.63.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 164.63.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.168.0.0/16
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 192.168.0.0/16    
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ['${AccountName}-InboundEndpoint', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+
+  InboundEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Properties:
+      Direction: INBOUND
+      IpAddresses:
+        - Ip: !Ref InboundResolverEndpointAZaIP
+          SubnetId: !Ref ResolverEndpointAZaSubnet
+        - Ip: !Ref InboundResolverEndpointAZbIP
+          SubnetId: !Ref ResolverEndpointAZbSubnet
+      Name: !Sub
+        - '${AccountName}-R53-${StackMeaningfulName}'
+        - AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]
+          StackMeaningfulName: !Select [1, !Split ['-CFN-', !Ref 'AWS::StackName']]
+      SecurityGroupIds:
+        - !Ref InboundEndpointSecurityGroup
+
+  RootResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: '.'
+      Name: !Sub ['${AccountName}-Root', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps:
+        - Ip: '8.34.34.34'
+        - Ip: '8.35.35.35'
+
+  P1ROSAResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'p1.openshiftapps.com.'
+      Name: !Sub ['${AccountName}-P1ROSA', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps:
+        - Ip: !Ref InboundResolverEndpointAZaIP
+        - Ip: !Ref InboundResolverEndpointAZbIP
+
+  W1ResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'w1.bp.com.'
+      Name: !Sub ['${AccountName}-W1', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps:
+        - Ip: !Ref InboundResolverEndpointAZaIP
+        - Ip: !Ref InboundResolverEndpointAZbIP
+
+  BPAWSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'bpaws.com.'
+      Name: !Sub ['${AccountName}-BPAWS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps:
+        - Ip: !Ref InboundResolverEndpointAZaIP
+        - Ip: !Ref InboundResolverEndpointAZbIP
+
+  AETHERResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'aether.ms.'
+      Name: !Sub ['${AccountName}-AETHER', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  AFSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'afs.azure.net.'
+      Name: !Sub ['${AccountName}-AFS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  APIResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'api.azureml.ms.'
+      Name: !Sub ['${AccountName}-API', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  APPResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'appserviceenvironment.net.'
+      Name: !Sub ['${AccountName}-APP', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  AZCONFIGResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'azconfig.io.'
+      Name: !Sub ['${AccountName}-AZCONFIG', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  AZUREAUTOMATIONResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'azure-automation.net.'
+      Name: !Sub ['${AccountName}-AZUREAUTOMATION', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  AZURECRResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'azurecr.io.'
+      Name: !Sub ['${AccountName}-AZURECR', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  AZUREDEVICESResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'azure-devices.net.'
+      Name: !Sub ['${AccountName}-AZUREDEVICES', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  AZURESYNAPSEResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'azuresynapse.net.'
+      Name: !Sub ['${AccountName}-AZURESYNAPSE', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  BACKUPWINDOWSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'backup.windowsazure.com.'
+      Name: !Sub ['${AccountName}-BACKUPWINDOWS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  BATCHResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'batch.azure.com.'
+      Name: !Sub ['${AccountName}-BATCH', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  COGNITIVESERVICESResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'cognitiveservices.azure.com.'
+      Name: !Sub ['${AccountName}-COGNITIVESERVICES', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  COSMOSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'cosmos.azure.com.'
+      Name: !Sub ['${AccountName}-COSMOS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  DATABASEResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'database.azure.com.'
+      Name: !Sub ['${AccountName}-DATABASE', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  DATAFACTORYResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'datafactory.azure.net.'
+      Name: !Sub ['${AccountName}-DATAFACTORY', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  DIGITALTWINSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'digitaltwins.azure.net.'
+      Name: !Sub ['${AccountName}-DIGITALTWINS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  DOCUMENTSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'documents.azure.com.'
+      Name: !Sub ['${AccountName}-DOCUMENTS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  EVENTGRIDResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'eventgrid.azure.net.'
+      Name: !Sub ['${AccountName}-EVENTGRID', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  EXPERIMENTSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'experiments.azureml.net.'
+      Name: !Sub ['${AccountName}-EXPERIMENTS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  INSTANCESResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'instances.azureml.ms.'
+      Name: !Sub ['${AccountName}-INSTANCES', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  MODELMANAGEMENTResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'modelmanagement.azureml.net.'
+      Name: !Sub ['${AccountName}-MODELMANAGEMENT', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  MONITORResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'monitor.azure.com.'
+      Name: !Sub ['${AccountName}-MONITOR', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  NOTEBOOKSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'notebooks.azure.net.'
+      Name: !Sub ['${AccountName}-NOTEBOOKS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  PURVIEWResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'purview.azure.com.'
+      Name: !Sub ['${AccountName}-PURVIEW', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  PURVIEWSTUDIOResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'purviewstudio.azure.com.'
+      Name: !Sub ['${AccountName}-PURVIEWSTUDIO', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  SERVICEResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'service.signalr.net.'
+      Name: !Sub ['${AccountName}-SERVICE', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  STUDIOSERVICEResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'studioservice.azureml.com.'
+      Name: !Sub ['${AccountName}-STUDIOSERVICE', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  VAULTCOREResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'vaultcore.azure.net.'
+      Name: !Sub ['${AccountName}-VAULTCORE', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  WINDOWSResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'windows.net.'
+      Name: !Sub ['${AccountName}-WINDOWS', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  BPResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'bp.com.'
+      Name: !Sub ['${AccountName}-BP', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  BPGlobalResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'bpglobal.com.'
+      Name: !Sub ['${AccountName}-BPGlobal', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  Reverse1ResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: '177.149.in-addr.arpa.'
+      Name: !Sub ['${AccountName}-Reverse1', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  Reverse2ResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: '184.149.in-addr.arpa.'
+      Name: !Sub ['${AccountName}-Reverse2', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps: !FindInMap [RegionMap, !Ref "AWS::Region", IpList]
+
+  Reverse3ResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: '10.in-addr.arpa.'
+      Name: !Sub ['${AccountName}-Reverse3', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps:
+        - Ip: !Ref InboundResolverEndpointAZaIP
+        - Ip: !Ref InboundResolverEndpointAZbIP
+
+  EUCd2ResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Condition: DeployEUCd2ResolverRule
+    Properties:
+      DomainName: 'cd2.bp.com.'
+      Name: !Sub ['${AccountName}-CD2', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps:
+        - Ip: '10.163.213.251'
+        - Ip: '10.163.215.55'
+        - Ip: '10.163.214.221'
+        - Ip: '10.163.213.162'
+
+  USCd2ResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Condition: DeployUSCd2ResolverRule
+    Properties:
+      DomainName: 'cd2.bp.com.'
+      Name: !Sub ['${AccountName}-CD2', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: FORWARD
+      ResolverEndpointId: !Ref OutboundEndpoint
+      TargetIps:
+        - Ip: '10.177.213.222'
+        - Ip: '10.177.215.211'
+        - Ip: '10.177.213.223'
+
+  AmazonResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: 'amazonaws.com'
+      Name: !Sub ['${AccountName}-Amazonaws', AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]]
+      RuleType: SYSTEM
+
+  ShareResourceWithOrgUnits:
+    Type: AWS::RAM::ResourceShare
+    Properties:
+      AllowExternalPrincipals: False
+      Name: !Sub
+        - '${AccountName}-RAM-${StackMeaningfulName}'
+        - AccountName: !Select [0, !Split ['-CFN-', !Ref 'AWS::StackName']]
+          StackMeaningfulName: !Select [1, !Split ['-CFN-', !Ref 'AWS::StackName']]
+      ResourceArns:
+        - !Sub '${RootResolverRule.Arn}'
+        - !Sub '${BPResolverRule.Arn}'
+        - !Sub '${BPGlobalResolverRule.Arn}'
+        - !Sub '${Reverse1ResolverRule.Arn}'
+        - !Sub '${Reverse2ResolverRule.Arn}'
+        - !Sub '${Reverse3ResolverRule.Arn}'
+        - !Sub '${W1ResolverRule.Arn}'
+        - !Sub '${BPAWSResolverRule.Arn}'
+        - !Sub '${AETHERResolverRule.Arn}'
+        - !Sub '${AFSResolverRule.Arn}'
+        - !Sub '${APIResolverRule.Arn}'
+        - !Sub '${APPResolverRule.Arn}'
+        - !Sub '${AZCONFIGResolverRule.Arn}'
+        - !Sub '${AZUREAUTOMATIONResolverRule.Arn}'
+        - !Sub '${AZURECRResolverRule.Arn}'
+        - !Sub '${AZUREDEVICESResolverRule.Arn}'
+        - !Sub '${AZURESYNAPSEResolverRule.Arn}'
+        - !Sub '${BACKUPWINDOWSResolverRule.Arn}'
+        - !Sub '${BATCHResolverRule.Arn}'
+        - !Sub '${COGNITIVESERVICESResolverRule.Arn}'
+        - !Sub '${COSMOSResolverRule.Arn}'
+        - !Sub '${DATABASEResolverRule.Arn}'
+        - !Sub '${DATAFACTORYResolverRule.Arn}'
+        - !Sub '${DIGITALTWINSResolverRule.Arn}'
+        - !Sub '${DOCUMENTSResolverRule.Arn}'
+        - !Sub '${EVENTGRIDResolverRule.Arn}'
+        - !Sub '${EXPERIMENTSResolverRule.Arn}'
+        - !Sub '${INSTANCESResolverRule.Arn}'
+        - !Sub '${MODELMANAGEMENTResolverRule.Arn}'
+        - !Sub '${MONITORResolverRule.Arn}'
+        - !Sub '${NOTEBOOKSResolverRule.Arn}'
+        - !Sub '${PURVIEWResolverRule.Arn}'
+        - !Sub '${PURVIEWSTUDIOResolverRule.Arn}'
+        - !Sub '${SERVICEResolverRule.Arn}'
+        - !Sub '${STUDIOSERVICEResolverRule.Arn}'
+        - !Sub '${VAULTCOREResolverRule.Arn}'
+        - !Sub '${WINDOWSResolverRule.Arn}'
+        - !Sub '${P1ROSAResolverRule.Arn}'
+        - !Sub '${AmazonResolverRule.Arn}'
+        - !If [DeployEUCd2ResolverRule, !Sub '${EUCd2ResolverRule.Arn}', !Sub '${USCd2ResolverRule.Arn}']
+      Principals:
+        - !Sub 'arn:aws:organizations::${HubAccountID}:ou/${OrganizationsID}/${ConnectedProdOU}'
+        - !Sub 'arn:aws:organizations::${HubAccountID}:ou/${OrganizationsID}/${ConnectedNonProdOU}'
+        - !Sub 'arn:aws:organizations::${HubAccountID}:ou/${OrganizationsID}/${SharedServicesOU}'
+        - !Sub 'arn:aws:organizations::${HubAccountID}:ou/${OrganizationsID}/${FoundationPlatformOU}'
+        - !Sub 'arn:aws:organizations::${HubAccountID}:ou/${OrganizationsID}/${ConnectedOU}'
+
+
+Outputs:
+  RootResolverRuleId:
+    Description: Root Resolver Rule Id
+    Value: !Ref RootResolverRule
+  BpResolverRuleId:
+    Description: BP1 Resolver Rule Id
+    Value: !Ref BPResolverRule
+  BpGlobalResolverRuleId:
+    Description: BP1 Resolver Rule Id
+    Value: !Ref BPGlobalResolverRule
+  Reverse1ResolverRuleId:
+    Description: Reverse1 Resolver Rule Id
+    Value: !Ref Reverse1ResolverRule   
+  Reverse2ResolverRuleId:
+    Description: Reverse2 Resolver Rule Id
+    Value: !Ref Reverse2ResolverRule
+  Reverse3ResolverRuleId:
+    Description: Reverse3 Resolver Rule Id
+    Value: !Ref Reverse3ResolverRule  
+  Cd2ResolverRuleId:
+    Description: CD2 Resolver Rule Id
+    Value: !If [DeployEUCd2ResolverRule, !Ref EUCd2ResolverRule, !Ref USCd2ResolverRule]
+  AmazonResolverRuleId:
+    Description: Amazon Resolver Rule Id
+    Value: !Ref AmazonResolverRule

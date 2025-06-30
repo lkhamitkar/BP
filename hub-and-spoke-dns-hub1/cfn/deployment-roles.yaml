@@ -1,0 +1,46 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  AccountName:
+    Description: Friendly name of the account
+    Type: String
+Resources:
+
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DnsHub-DeploymentRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: cloudformation.amazonaws.com
+      Description: Privileged role passed to CloudFormation for deployments
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  GitLabRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Gitlab-unprivileged-role_DEPLOYMENT
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              AWS: arn:aws:iam::554245309482:role/WE1-P1-0404-role_INSTANCE-PROFILE
+      Description: Unprivileged role for use by Gitlab
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/${AccountName}-pol_PlatformUserBoundary
+      Policies:
+        - PolicyName: AllowPassPrivilegedDeploymentRole
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationRole.Arn

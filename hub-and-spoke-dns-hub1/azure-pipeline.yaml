@@ -1,0 +1,357 @@
+---
+variables:
+  AWS_DEFAULT_REGION: "eu-west-1"
+  APP_NAME: DnsHub
+  ${{if eq(variables['Build.SourceBranchName'], 'main')}}:
+    SERVICE_CONNECTION: "WS-00GT"
+    ORGANIZATIONS_ID: o-zkinvbues0
+    CONNECTED_PROD_OU: ou-4j9e-tfi826o7
+    CONNECTED_NONPROD_OU: ou-4j9e-bzj16q8w
+    SHARED_SERVICES_OU: ou-4j9e-zohtyc8h
+    FOUNDATION_PLATFORM_OU: ou-4j9e-pwawmg8m
+    CONNECTED_OU: ou-4j9e-xiv6xvwr
+    ENVIRONMENT: WS-00GT
+    DNS_HUB_ACCOUNT: 048910124132
+    HUB_ACCOUNT: 550772936474
+  ${{ elseif eq( variables['Build.SourceBranchName'], 'staging' ) }}:
+    SERVICE_CONNECTION: "WS-Y08C"
+    ORGANIZATIONS_ID: o-xj30bglfdr
+    CONNECTED_PROD_OU: ou-ups5-r6dd5fzp
+    CONNECTED_NONPROD_OU: ou-ups5-9ursbnzb
+    SHARED_SERVICES_OU: ou-ups5-wymh6aqh
+    FOUNDATION_PLATFORM_OU: ou-ups5-prlyie11
+    CONNECTED_OU: ou-ups5-4w9o0ki3
+    ENVIRONMENT: WS-Y08C
+    DNS_HUB_ACCOUNT: 808294362653
+    HUB_ACCOUNT: 550590017392
+  ${{ elseif eq( variables['Build.SourceBranchName'], 'develop' ) }}:
+    SERVICE_CONNECTION: "WS-Z068"
+    ORGANIZATIONS_ID: o-0id74l0mho
+    CONNECTED_PROD_OU: ou-7g9r-aj2zts7h
+    CONNECTED_NONPROD_OU: ou-7g9r-voteozbo
+    SHARED_SERVICES_OU: ou-7g9r-n9s95zrc
+    FOUNDATION_PLATFORM_OU: ou-7g9r-jxxffkh3
+    CONNECTED_OU: ou-7g9r-zy976fl0
+    ENVIRONMENT: WS-Z068
+    DNS_HUB_ACCOUNT: 213804799719
+    HUB_ACCOUNT: 423499082931
+  ${{ if notIn(variables['Build.SourceBranchName'], 'main', 'staging', 'develop') }}:
+    # New Contributor - Feature Account
+    # Add your account service connection here
+    SERVICE_CONNECTION: ""
+    ENVIRONMENT: ""
+    DNS_HUB_ACCOUNT: 
+
+  DEPLOY_VPC: |
+    set -e
+    APP_NAME=DnsHub
+    aws cloudformation deploy \
+      --template-file cfn/network-connected-vpc.yaml \
+      --stack-name ${ENVIRONMENT}-${APP_NAME}-NETWORK-STACK \
+      --parameter-overrides Cidr=${VPC_CIDR} \
+        TransitGatewayId=${TGW_ID} \
+        P1VPCPeeringId=${P1_VPC_PEERING_ID} \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --role-arn arn:aws:iam::${DNS_HUB_ACCOUNT}:role/${APP_NAME}-DeploymentRole \
+      --no-fail-on-empty-changeset
+  R53_RESOLVER: |
+    set -e
+    APP_NAME=DnsHub
+    VPC_ID=(`aws cloudformation describe-stacks --stack-name ${ENVIRONMENT}-${APP_NAME}-NETWORK-STACK --query "Stacks[0].Outputs[?OutputKey=='VPC'].OutputValue" --output text`)
+    RESOLVER_AZa_SUBNET=(`aws cloudformation describe-stacks --stack-name ${ENVIRONMENT}-${APP_NAME}-NETWORK-STACK --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnetA'].OutputValue" --output text`)
+    RESOLVER_AZb_SUBNET=(`aws cloudformation describe-stacks --stack-name ${ENVIRONMENT}-${APP_NAME}-NETWORK-STACK --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnetB'].OutputValue" --output text`)
+    aws cloudformation deploy \
+      --template-file cfn/dns-resolver.yaml \
+      --stack-name ${ENVIRONMENT}-${APP_NAME}-CFN-DNS-RESOLVER \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --role-arn arn:aws:iam::${DNS_HUB_ACCOUNT}:role/${APP_NAME}-DeploymentRole \
+      --parameter-overrides InboundResolverEndpointAZaIP=$(IN_RESOLVER_AZa_IP) \
+        OutboundResolverEndpointAZaIP=$(OUT_RESOLVER_AZa_IP) \
+        ResolverEndpointAZaSubnet=${RESOLVER_AZa_SUBNET} \
+        InboundResolverEndpointAZbIP=$(IN_RESOLVER_AZb_IP) \
+        OutboundResolverEndpointAZbIP=$(OUT_RESOLVER_AZb_IP) \
+        ResolverEndpointAZbSubnet=${RESOLVER_AZb_SUBNET} \
+        VpcId=${VPC_ID} \
+        OrganizationsID=${ORGANIZATIONS_ID} \
+        ConnectedProdOU=${CONNECTED_PROD_OU} \
+        ConnectedNonProdOU=${CONNECTED_NONPROD_OU} \
+        SharedServicesOU=${SHARED_SERVICES_OU} \
+        FoundationPlatformOU=${FOUNDATION_PLATFORM_OU} \
+        ConnectedOU=${CONNECTED_OU} \
+        HubAccountID=${HUB_ACCOUNT} \
+      --tags cloud-environment=${ENVIRONMENT}- \
+      --no-fail-on-empty-changeset
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: AWS Platform/ado-pipeline-templates
+      ref: refs/heads/main
+    
+stages:
+  - stage: Test
+    jobs:
+      - template: testlint.yml@templates
+        parameters:
+          lint:
+            - yaml
+            - python_flake8
+            - cloudformation
+      
+  - stage: Deploy_Role
+    condition: and(succeeded(), ne(variables.SERVICE_CONNECTION, ''))
+    displayName: Deploy_Role
+    jobs:
+      - job: DeployRoles
+        steps:
+          - task: AWSShellScript@1
+            displayName: Deploy
+            inputs:
+              awsCredentials: $(SERVICE_CONNECTION)
+              regionName: $(AWS_DEFAULT_REGION)
+              scriptType: "inline"
+              inlineScript: |
+                set -e
+                APP_NAME=DnsHub
+                AWS_DEFAULT_REGION="eu-west-1"
+                aws cloudformation deploy \
+                  --template-file cfn/deployment-roles.yaml \
+                  --stack-name ${ENVIRONMENT}-${APP_NAME}-DeploymentRoles \
+                  --parameter-overrides AccountName=${ENVIRONMENT} Application=${APP_NAME} \
+                  --capabilities CAPABILITY_NAMED_IAM \
+                  --role-arn arn:aws:iam::${DNS_HUB_ACCOUNT}:role/${APP_NAME}-DeploymentRole \
+                  --no-fail-on-empty-changeset
+  - stage: Deploy_VPC
+    condition: and(succeeded(), ne(variables.SERVICE_CONNECTION, ''))
+    displayName: Deploy_VPC
+    jobs:
+      - job: DeployVPC
+        condition: in(variables['Build.SourceBranchName'], 'main','staging','develop')
+        strategy:
+          matrix:
+            ${{ if eq(variables['Build.SourceBranchName'], 'develop' ) }}:
+              'us-east-1':
+                AWS_DEFAULT_REGION: 'us-east-1'
+                VPC_CIDR: 10.189.124.0/24
+                TGW_ID: tgw-0ec493341ed049b95
+                P1_VPC_PEERING_ID: pcx-0c78d295a93527282
+              'us-east-2':
+                AWS_DEFAULT_REGION: 'us-east-2'
+                VPC_CIDR: 10.49.250.0/24
+                TGW_ID: tgw-0b19c9594611b0fce
+                P1_VPC_PEERING_ID: pcx-0d57677956fb3bb86
+              'eu-west-1':
+                AWS_DEFAULT_REGION: 'eu-west-1'
+                VPC_CIDR: 10.57.254.0/24
+                TGW_ID: tgw-09377e6d2abd73921
+                P1_VPC_PEERING_ID: pcx-05a4ed1b4b1a62418
+              'ap-southeast-1':
+                AWS_DEFAULT_REGION: 'ap-southeast-1'
+                VPC_CIDR: 10.188.249.0/24
+                TGW_ID: tgw-0fe8f79e54dfcc4fb
+                P1_VPC_PEERING_ID: pcx-0583ce234302c439b
+              'ap-southeast-2':
+                AWS_DEFAULT_REGION: 'ap-southeast-2'
+                VPC_CIDR: 10.170.124.0/24
+                TGW_ID: tgw-0e101d84f1734a446
+                P1_VPC_PEERING_ID: pcx-0ddfdc953b1c7d020
+              'ap-southeast-3':
+                AWS_DEFAULT_REGION: 'ap-southeast-3'
+                VPC_CIDR: 10.191.126.0/24
+                TGW_ID: tgw-0e387a04d68aca52a
+            ${{ elseif eq(variables['Build.SourceBranchName'], 'staging' ) }}:
+              'us-east-1':
+                AWS_DEFAULT_REGION: 'us-east-1'
+                VPC_CIDR: 10.189.116.0/24
+                TGW_ID: tgw-0150129f5ad08db65
+                P1_VPC_PEERING_ID: pcx-03f81e2d801c90011
+              'us-east-2':
+                AWS_DEFAULT_REGION: 'us-east-2'
+                VPC_CIDR: 10.49.234.0/24
+                TGW_ID: tgw-0b63c18a3d3806fd3
+                P1_VPC_PEERING_ID: pcx-073d1197dadfe95d0
+              'eu-west-1':
+                AWS_DEFAULT_REGION: 'eu-west-1'
+                VPC_CIDR: 10.57.234.0/24
+                TGW_ID: tgw-0c9e2a69cdec3eefe
+                P1_VPC_PEERING_ID: pcx-0297ac6890ca52dd9
+              'ap-southeast-1':
+                AWS_DEFAULT_REGION: 'ap-southeast-1'
+                VPC_CIDR: 10.188.233.0/24
+                TGW_ID: tgw-08760a1561c8b28ca
+                P1_VPC_PEERING_ID: pcx-00cf27722ad85a2fb
+              'ap-southeast-2':
+                AWS_DEFAULT_REGION: 'ap-southeast-2'
+                VPC_CIDR: 10.170.116.0/24
+                TGW_ID: tgw-0b02469563ff38480
+                P1_VPC_PEERING_ID: pcx-081cfde907d9234b4
+              'ap-southeast-3':
+                AWS_DEFAULT_REGION: 'ap-southeast-3'
+                VPC_CIDR: 10.191.122.0/24
+                TGW_ID: tgw-03b9b37c01718a814
+            ${{ elseif eq(variables['Build.SourceBranchName'], 'main' ) }}:
+              'us-east-1':
+                AWS_DEFAULT_REGION: 'us-east-1'
+                VPC_CIDR: 10.189.1.0/24
+                TGW_ID: tgw-0fd67d32ab317c33d
+                P1_VPC_PEERING_ID: pcx-01d331d1ab301ea28
+              'us-east-2':
+                AWS_DEFAULT_REGION: 'us-east-2'
+                VPC_CIDR: 10.48.30.0/24
+                TGW_ID: tgw-0a4e16d930bba15bd
+                P1_VPC_PEERING_ID: pcx-0a351e881ea04bd52
+              'eu-west-1':
+                AWS_DEFAULT_REGION: 'eu-west-1'
+                VPC_CIDR: 10.56.70.0/24
+                TGW_ID: tgw-0787cce2851713313
+                P1_VPC_PEERING_ID: pcx-0b7d2df689117a099
+              'ap-southeast-1':
+                AWS_DEFAULT_REGION: 'ap-southeast-1'
+                VPC_CIDR: 10.188.1.0/24
+                TGW_ID: tgw-09ddc756aec980b44
+                P1_VPC_PEERING_ID: pcx-0dccdfc1524daccbf
+              'ap-southeast-2':
+                AWS_DEFAULT_REGION: 'ap-southeast-2'
+                VPC_CIDR: 10.170.0.0/24
+                TGW_ID: tgw-0bc3423a11ac8903b
+                P1_VPC_PEERING_ID: pcx-0b743dc6188f443a0
+              'ap-southeast-3':
+                AWS_DEFAULT_REGION: 'ap-southeast-3'
+                VPC_CIDR: 10.191.64.0/24
+                TGW_ID: tgw-06ca5a544c86df12b
+        steps:
+          - task: AWSShellScript@1
+            displayName: Deploy
+            inputs:
+              awsCredentials: ${{variables.SERVICE_CONNECTION}}
+              regionName: $(AWS_DEFAULT_REGION)
+              scriptType: "inline"
+              inlineScript: $(DEPLOY_VPC)
+  - stage: Deploy_R53_Resolver
+    condition: and(succeeded(), ne(variables.SERVICE_CONNECTION, ''))
+    displayName: Deploy_R53_Resolver
+    jobs:
+      - job: DeployR53
+        condition: in(variables['Build.SourceBranchName'], 'main','staging','develop')
+        strategy:
+          matrix:
+            ${{ if eq(variables['Build.SourceBranchName'], 'develop' ) }}:
+              'us-east-1':
+                AWS_DEFAULT_REGION: 'us-east-1'
+                IN_RESOLVER_AZa_IP: 10.189.124.6
+                OUT_RESOLVER_AZa_IP: 10.189.124.5
+                IN_RESOLVER_AZb_IP: 10.189.124.36
+                OUT_RESOLVER_AZb_IP: 10.189.124.37
+              'us-east-2':
+                AWS_DEFAULT_REGION: 'us-east-2'
+                IN_RESOLVER_AZa_IP: 10.49.250.4
+                OUT_RESOLVER_AZa_IP: 10.49.250.5
+                IN_RESOLVER_AZb_IP: 10.49.250.36
+                OUT_RESOLVER_AZb_IP: 10.49.250.37
+              'eu-west-1':
+                AWS_DEFAULT_REGION: 'eu-west-1'
+                IN_RESOLVER_AZa_IP: 10.57.254.4
+                OUT_RESOLVER_AZa_IP: 10.57.254.5
+                IN_RESOLVER_AZb_IP: 10.57.254.36
+                OUT_RESOLVER_AZb_IP: 10.57.254.37
+              'ap-southeast-1':
+                AWS_DEFAULT_REGION: 'ap-southeast-1'
+                IN_RESOLVER_AZa_IP: 10.188.249.4
+                OUT_RESOLVER_AZa_IP: 10.188.249.5
+                IN_RESOLVER_AZb_IP: 10.188.249.36
+                OUT_RESOLVER_AZb_IP: 10.188.249.37
+              'ap-southeast-2':
+                AWS_DEFAULT_REGION: 'ap-southeast-2'
+                IN_RESOLVER_AZa_IP: 10.170.124.4
+                OUT_RESOLVER_AZa_IP: 10.170.124.5
+                IN_RESOLVER_AZb_IP: 10.170.124.36
+                OUT_RESOLVER_AZb_IP: 10.170.124.37
+              'ap-southeast-3':
+                AWS_DEFAULT_REGION: 'ap-southeast-3'
+                IN_RESOLVER_AZa_IP: 10.191.126.4
+                OUT_RESOLVER_AZa_IP: 10.191.126.5
+                IN_RESOLVER_AZb_IP: 10.191.126.36
+                OUT_RESOLVER_AZb_IP: 10.191.126.37
+            ${{ elseif eq(variables['Build.SourceBranchName'], 'staging' ) }}:
+              'us-east-1':
+                AWS_DEFAULT_REGION: 'us-east-1'
+                IN_RESOLVER_AZa_IP: 10.189.116.4
+                OUT_RESOLVER_AZa_IP: 10.189.116.5
+                IN_RESOLVER_AZb_IP: 10.189.116.36
+                OUT_RESOLVER_AZb_IP: 10.189.116.37
+              'us-east-2':
+                AWS_DEFAULT_REGION: 'us-east-2'
+                IN_RESOLVER_AZa_IP: 10.49.234.9
+                OUT_RESOLVER_AZa_IP: 10.49.234.10
+                IN_RESOLVER_AZb_IP: 10.49.234.40
+                OUT_RESOLVER_AZb_IP: 10.49.234.41
+              'eu-west-1':
+                AWS_DEFAULT_REGION: 'eu-west-1'
+                IN_RESOLVER_AZa_IP: 10.57.234.4
+                OUT_RESOLVER_AZa_IP: 10.57.234.5
+                IN_RESOLVER_AZb_IP: 10.57.234.36
+                OUT_RESOLVER_AZb_IP: 10.57.234.37
+              'ap-southeast-1':
+                AWS_DEFAULT_REGION: 'ap-southeast-1'
+                IN_RESOLVER_AZa_IP: 10.188.233.7
+                OUT_RESOLVER_AZa_IP: 10.188.233.8
+                IN_RESOLVER_AZb_IP: 10.188.233.38
+                OUT_RESOLVER_AZb_IP: 10.188.233.39
+              'ap-southeast-2':
+                AWS_DEFAULT_REGION: 'ap-southeast-2'
+                IN_RESOLVER_AZa_IP: 10.170.116.7
+                OUT_RESOLVER_AZa_IP: 10.170.116.8
+                IN_RESOLVER_AZb_IP: 10.170.116.38
+                OUT_RESOLVER_AZb_IP: 10.170.116.39
+              'ap-southeast-3':
+                AWS_DEFAULT_REGION: 'ap-southeast-3'
+                IN_RESOLVER_AZa_IP: 10.191.122.7
+                OUT_RESOLVER_AZa_IP: 10.191.122.8
+                IN_RESOLVER_AZb_IP: 10.191.122.38
+                OUT_RESOLVER_AZb_IP: 10.191.122.39
+            ${{ elseif eq(variables['Build.SourceBranchName'], 'main' ) }}:
+              'us-east-1':
+                AWS_DEFAULT_REGION: 'us-east-1'
+                IN_RESOLVER_AZa_IP: 10.189.1.7
+                OUT_RESOLVER_AZa_IP: 10.189.1.8
+                IN_RESOLVER_AZb_IP: 10.189.1.38
+                OUT_RESOLVER_AZb_IP: 10.189.1.39
+              'us-east-2':
+                AWS_DEFAULT_REGION: 'us-east-2'
+                IN_RESOLVER_AZa_IP: 10.48.30.7
+                OUT_RESOLVER_AZa_IP: 10.48.30.8
+                IN_RESOLVER_AZb_IP: 10.48.30.38
+                OUT_RESOLVER_AZb_IP: 10.48.30.39
+              'eu-west-1':
+                AWS_DEFAULT_REGION: 'eu-west-1'
+                IN_RESOLVER_AZa_IP: 10.56.70.4
+                OUT_RESOLVER_AZa_IP: 10.56.70.5
+                IN_RESOLVER_AZb_IP: 10.56.70.36
+                OUT_RESOLVER_AZb_IP: 10.56.70.37
+              'ap-southeast-1':
+                AWS_DEFAULT_REGION: 'ap-southeast-1'
+                IN_RESOLVER_AZa_IP: 10.188.1.7
+                OUT_RESOLVER_AZa_IP: 10.188.1.8
+                IN_RESOLVER_AZb_IP: 10.188.1.38
+                OUT_RESOLVER_AZb_IP: 10.188.1.39
+              'ap-southeast-2':
+                AWS_DEFAULT_REGION: 'ap-southeast-2'
+                IN_RESOLVER_AZa_IP: 10.170.0.7
+                OUT_RESOLVER_AZa_IP: 10.170.0.8
+                IN_RESOLVER_AZb_IP: 10.170.0.38
+                OUT_RESOLVER_AZb_IP: 10.170.0.39
+              'ap-southeast-3':
+                AWS_DEFAULT_REGION: 'ap-southeast-3'
+                IN_RESOLVER_AZa_IP: 10.191.64.7
+                OUT_RESOLVER_AZa_IP: 10.191.64.8
+                IN_RESOLVER_AZb_IP: 10.191.64.38
+                OUT_RESOLVER_AZb_IP: 10.191.64.39
+        steps:
+          - task: AWSShellScript@1
+            displayName: Deploy
+            inputs:
+              awsCredentials: ${{variables.SERVICE_CONNECTION}}
+              regionName: $(AWS_DEFAULT_REGION)
+              scriptType: "inline"
+              inlineScript: $(R53_RESOLVER)
