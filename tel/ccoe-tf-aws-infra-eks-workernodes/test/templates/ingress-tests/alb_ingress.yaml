@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "alb-ingress-test"
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: "alb-ingress-test"
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: "alb-ingress-test"
+        network: "allow-alb-ingress"
+    spec:
+      containers:
+      - image: public.ecr.aws/nginx/nginx:1.19.5
+        imagePullPolicy: Always
+        name: "alb-ingress-test"
+        ports:
+        - containerPort: 80
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: alb-test-service
+  annotations:
+    alb.ingress.kubernetes.io/target-type: instance
+spec:
+  selector:
+    app: "alb-ingress-test"
+  ports:
+    - port: 8003
+      targetPort: 80
+  type: NodePort
+
+
+---
+
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: alb-ingress-test
+  namespace: default
+  labels:
+    app: alb-ingress-test
+  annotations:
+    kubernetes.io/ingress.class: alb
+spec:
+  rules:
+  - http:
+      paths:
+      - backend:
+          serviceName: alb-test-service
+          servicePort: 8003
+        path: /*

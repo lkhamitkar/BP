@@ -1,0 +1,95 @@
+#####################
+## eks-workernodes ##
+#####################
+
+.directory_name: &directory-name
+  - eu-central-1/eks-workernodes/*
+  - eu-central-1/*.tfvars
+
+.before_script_workernodes: &before-script-workernodes
+  - ${GITLAB_CI_SCRIPTS}find_cluster.sh || { echo "Cluster not found, exiting early.." ; exit 0; }
+
+.before_script_global: &before-script-global
+  - terraform --version
+  - if [ -z ${CI_MERGE_REQUEST_ID} ]; then if [[ ${CI_COMMIT_REF_NAME} == feature* ]]; then export TERRAFORM_ENVIRONMENT=${FEATURE_TERRAFORM_ENVIRONMENT}; else export TERRAFORM_ENVIRONMENT="${CI_COMMIT_REF_NAME}"; fi; else export TERRAFORM_ENVIRONMENT="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"; fi;
+  - cd ${TERRAFORM_DIR}
+
+before_script:
+  - *before-script-global
+
+# Target Pipeline
+validate:eks-workernodes:
+  extends:
+  - .validate
+  - .job:eks-workernodes
+  rules:
+    - if: "$CI_MERGE_REQUEST_ID || $CI_COMMIT_REF_NAME =~ /^feature/"
+      when: never
+    - changes: *directory-name
+      when: always
+    - when: manual
+
+plan:eks-workernodes:
+  extends:
+  - .plan
+  - .job:eks-workernodes
+  rules:
+    - if: "$CI_MERGE_REQUEST_ID || $CI_COMMIT_REF_NAME =~ /^feature/"
+      when: never
+    - changes: *directory-name
+      when: on_success
+    - when: manual
+  before_script:
+    - *before-script-global
+    - *before-script-workernodes
+  needs:
+    - job: validate:eks-workernodes
+      artifacts: true
+
+apply:eks-workernodes:
+  extends:
+    - .apply
+    - .job:eks-workernodes
+  rules:
+    - if: "$CI_MERGE_REQUEST_ID || $CI_COMMIT_REF_NAME =~ /^feature/"
+      when: never
+    - changes: *directory-name
+      when: manual
+    - when: manual
+  needs:
+    - job: plan:eks-workernodes
+      artifacts: true
+
+# MR Pipeline
+mr:validate:eks-workernodes:
+  extends:
+    - .mr:validate
+    - .job:eks-workernodes
+
+mr:plan:eks-workernodes:
+  extends:
+    - .mr:plan
+    - .job:eks-workernodes
+  before_script:
+    - *before-script-global
+    - *before-script-workernodes
+  needs:
+    - job: mr:validate:eks-workernodes
+      artifacts: true
+
+# Feature Pipeline
+feature:validate:eks-workernodes:
+  extends:
+    - .feature:validate
+    - .job:eks-workernodes
+
+feature:plan:eks-workernodes:
+  extends:
+    - .feature:plan
+    - .job:eks-workernodes
+  before_script:
+    - *before-script-global
+    - *before-script-workernodes
+  needs:
+    - job: feature:validate:eks-workernodes
+      artifacts: true
